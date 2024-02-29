@@ -202,13 +202,13 @@ fn check_actor(env: &Env, actor: &Option<IDLType>) -> Result<Option<Type>> {
     }
 }
 
-fn resolve_path(base: &Path, file: &str) -> PathBuf {
+fn resolve_path(base: &Path, file_str: &str) -> PathBuf {
     // TODO use shellexpand to support tilde
-    let file = PathBuf::from(file);
+    let file = PathBuf::from(file_str);
     if file.is_absolute() {
         file
     } else {
-        base.join(file)
+        std::fs::canonicalize(base.join(file)).expect(&format!("cannot canonicalize {file_str}"))
     }
 }
 
