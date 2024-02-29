@@ -82,6 +82,7 @@ pub enum PrincipalError {
 /// );
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "deepsize", derive(deepsize::DeepSizeOf))]
 pub struct Principal {
     /// Length.
     len: u8,

@@ -24,6 +24,7 @@ candid_derive = { path = "../candid_derive", version = "=0.6.2" }
 codespan-reporting = "0.11"
 crc32fast = "1.3.0"
 data-encoding = "2.4.0"
+deepsize = { git = "https://github.com/dscvr-one/deepsize.git", rev = "0.2.0-candid-0.9.3-2", optional = true }
 hex = "0.4.2"
 leb128 = "0.2.4"
 num_enum = "0.6.1"
@@ -90,6 +91,7 @@ parser = ["lalrpop", "lalrpop-util", "logos"]
 all = ["random"]
 mute_warnings = []
 arc_type = []
+deepsize = ["dep:deepsize"]
 
 # docs.rs-specific configuration
 # To test locally: RUSTDOCFLAGS="--cfg docsrs" cargo +nightly doc --features all

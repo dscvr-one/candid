@@ -270,6 +270,7 @@ dependencies = [
  "crc32fast",
  "criterion",
  "data-encoding",
+ "deepsize",
  "fake",
  "goldenfile",
  "hex",
@@ -559,6 +560,24 @@ name = "data-encoding"
 version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2e66c9d817f1720209181c316d28635c050fa304f9c79e47a520882661b7308"
+
+[[package]]
+name = "deepsize"
+version = "0.2.0"
+source = "git+https://github.com/dscvr-one/deepsize.git?rev=0.2.0-candid-0.9.3-2#031223dd07854244239265cd14b574ddcc5bfeee"
+dependencies = [
+ "deepsize_derive",
+]
+
+[[package]]
+name = "deepsize_derive"
+version = "0.1.2"
+source = "git+https://github.com/dscvr-one/deepsize.git?rev=0.2.0-candid-0.9.3-2#031223dd07854244239265cd14b574ddcc5bfeee"
+dependencies = [
+ "proc-macro2 1.0.66",
+ "quote 1.0.32",
+ "syn 2.0.27",
+]
 
 [[package]]
 name = "dhall"
