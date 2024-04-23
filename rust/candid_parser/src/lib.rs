@@ -128,7 +128,7 @@ pub mod types;
 pub mod utils;
 pub use types::IDLProg;
 pub mod typing;
-pub use typing::{check_file, check_prog, pretty_check_file};
+pub use typing::{check_file, check_prog, pretty_check_file, check_file_with_imports};
 
 pub use candid;
 pub use candid::*;

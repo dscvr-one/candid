@@ -304,7 +304,7 @@ fn merge_actor(
     }
 }
 
-fn check_file_(file: &Path, is_pretty: bool) -> Result<(TypeEnv, Option<Type>)> {
+fn check_file_(file: &Path, is_pretty: bool) -> Result<(TypeEnv, Option<Type>, Vec<PathBuf>)> {
     let base = if file.is_absolute() {
         file.parent().unwrap().to_path_buf()
     } else {
@@ -351,13 +351,16 @@ fn check_file_(file: &Path, is_pretty: bool) -> Result<(TypeEnv, Option<Type>)> 
     if actor.is_some() {
         res = merge_actor(&env, &res, &actor, "")?;
     }
-    Ok((te, res))
+    Ok((te, res, imports.into_iter().map(|x| x.1.to_owned()).collect()))
 }
 
 /// Type check did file including the imports.
 pub fn check_file(file: &Path) -> Result<(TypeEnv, Option<Type>)> {
-    check_file_(file, false)
+    check_file_(file, false).map(|(te, res, _)| (te, res))
 }
 pub fn pretty_check_file(file: &Path) -> Result<(TypeEnv, Option<Type>)> {
-    check_file_(file, true)
+    check_file_(file, false).map(|(te, res, _)| (te, res))
+}
+pub fn check_file_with_imports(file: &Path) -> Result<(TypeEnv, Option<Type>, Vec<PathBuf>)> {
+    check_file_(file, false)
 }
