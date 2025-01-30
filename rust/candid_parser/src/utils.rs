@@ -1,4 +1,5 @@
 use crate::{check_prog, pretty_check_file, pretty_parse, Error, Result};
+use candid::types::TypeInner;
 use candid::{types::Type, TypeEnv};
 use std::path::Path;
 
@@ -7,7 +8,7 @@ pub enum CandidSource<'a> {
     Text(&'a str),
 }
 
-impl<'a> CandidSource<'a> {
+impl CandidSource<'_> {
     pub fn load(&self) -> Result<(TypeEnv, Option<Type>)> {
         Ok(match self {
             CandidSource::File(path) => pretty_check_file(path)?,
@@ -49,7 +50,6 @@ pub fn service_equal(left: CandidSource, right: CandidSource) -> Result<()> {
 /// If the original did file contains imports, the output flattens the type definitions.
 /// For now, the comments from the original did file is omitted.
 pub fn instantiate_candid(candid: CandidSource) -> Result<(Vec<Type>, (TypeEnv, Type))> {
-    use candid::types::TypeInner;
     let (env, serv) = candid.load()?;
     let serv = serv.ok_or_else(|| Error::msg("the Candid interface has no main service type"))?;
     let serv = env.trace_type(&serv)?;
@@ -58,6 +58,23 @@ pub fn instantiate_candid(candid: CandidSource) -> Result<(Vec<Type>, (TypeEnv, 
         TypeInner::Service(_) => (vec![], (env, serv)),
         _ => unreachable!(),
     })
+}
+pub fn get_metadata(env: &TypeEnv, serv: &Option<Type>) -> Option<String> {
+    let serv = serv.clone()?;
+    let serv = env.trace_type(&serv).ok()?;
+    let serv = match serv.as_ref() {
+        TypeInner::Class(_, ty) => ty.clone(),
+        TypeInner::Service(_) => serv,
+        _ => unreachable!(),
+    };
+    let def_list = crate::bindings::analysis::chase_actor(env, &serv).ok()?;
+    let mut filtered = TypeEnv::new();
+    for d in def_list {
+        if let Some(t) = env.0.get(d) {
+            filtered.0.insert(d.to_string(), t.clone());
+        }
+    }
+    Some(candid::pretty::candid::compile(&filtered, &Some(serv)))
 }
 
 /// Merge canister metadata candid:args and candid:service into a service constructor.
@@ -79,4 +96,20 @@ pub fn merge_init_args(candid: &str, init: &str) -> Result<(TypeEnv, Type)> {
         }
         _ => unreachable!(),
     }
+}
+/// Check if a Rust type implements a Candid type. The candid type is given using the init args format.
+/// Note that this only checks structural equality, not equivalence. For recursive types, it may reject
+/// an unrolled type.
+pub fn check_rust_type<T: candid::CandidType>(candid_args: &str) -> Result<()> {
+    use crate::{types::IDLInitArgs, typing::check_init_args};
+    use candid::types::{internal::TypeContainer, subtype::equal, TypeEnv};
+    let parsed = candid_args.parse::<IDLInitArgs>()?;
+    let mut env = TypeEnv::new();
+    let args = check_init_args(&mut env, &TypeEnv::new(), &parsed)?;
+    let mut rust_env = TypeContainer::new();
+    let ty = rust_env.add::<T>();
+    let ty = env.merge_type(rust_env.env, ty);
+    let mut gamma = std::collections::HashSet::new();
+    equal(&mut gamma, &env, &args[0], &ty)?;
+    Ok(())
 }

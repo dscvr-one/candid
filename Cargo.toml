@@ -5,6 +5,7 @@ members = [
     "rust/candid_derive",
     "rust/ic_principal",
     "tools/didc",
+    "tools/didc-js/wasm-package",
 ]
 resolver = "2"
 
@@ -21,3 +22,4 @@ thiserror = "1.0"
 anyhow = "1.0"
 rand = "0.8"
 arbitrary = "1.3"
+console = "0.15"

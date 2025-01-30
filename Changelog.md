@@ -1,14 +1,49 @@
 
 # Changelog
 
+## 2025-01-22
+
+### Candid 0.10.13
+
+* Add `ArgumentEncoder::encode_ref`, `utils::{write_args, encode_args}` that don't consume the value when encoding.
+
+## 2025-01-15
+
+### Candid 0.10.12
+
+* Implement `CandidType` for `std::marker::PhantomData`.
+
+## 2024-12-10
+
+### Candid 0.10.11
+
+* Add `IDLBuilder.try_reserve_value_serializer_capacity()` to reserve capacity before serializing a large amount of data.
+
+## 2024-05-03
+
+### Candid 0.10.10
+
+* Add `candid::MotokoResult` type. Use `motoko_result.into_result()` to convert the value into Rust result, and `rust_result.into()` to get Motoko result.
+
+### candid_parser 0.2.0-beta
+
+* Breaking changes:
+  + Rewrite `configs` and `random` modules, adapting TOML format as the parser. `configs` module is no longer under a feature flag, and no longer depend on dhall.
+  + Rewrite Rust bindgen to use the new `configs` module. Use `emit_bindgen` to generate type bindings, and use `output_handlebar` to provide a handlebar template for the generated module. `compile` function provides a default template. The generated file without config is exactly the same as before.
+* Non-breaking changes:
+  + `utils::check_rust_type` function to check if a Rust type implements the provided candid type.
+
 ## 2024-04-11
 
-### Candid 0.10.7 -- 0.10.5
+### Candid 0.10.5 -- 0.10.9
 
 * Switch `HashMap` to `BTreeMap` in serialization and `T::ty()`. This leads to around 20% perf improvement for serializing complicated types.
 * Disable memoization for unrolled types in serialization to save cycle cost. In some cases, type table can get slightly larger, but it's worth the trade off.
 * Fix bug in `text_size`
 * Fix decoding cost calculation overflow
+* Fix length check in decoding principal type
+* Implement `CandidType` for `serde_bytes::ByteArray`
+* Add `pretty::candid::pp_init_args` function to pretty print init args
 
 ## 2024-02-27
 

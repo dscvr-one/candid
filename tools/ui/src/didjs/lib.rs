@@ -1,5 +1,11 @@
 use candid::types::{subtype, Type, TypeInner};
 use candid_parser::{check_prog, CandidType, Deserialize, IDLProg, TypeEnv};
+use ic_cdk::api::{data_certificate, set_certified_data};
+use ic_cdk::{init, post_upgrade};
+use ic_http_certification::{
+    utils::{add_skip_certification_header, skip_certification_certified_data},
+    HttpResponse,
+};
 
 #[derive(CandidType, Deserialize)]
 pub struct HeaderField(pub String, pub String);
@@ -8,14 +14,6 @@ pub struct HeaderField(pub String, pub String);
 pub struct HttpRequest {
     pub method: String,
     pub url: String,
-    pub headers: Vec<HeaderField>,
-    #[serde(with = "serde_bytes")]
-    pub body: Vec<u8>,
-}
-
-#[derive(CandidType, Deserialize)]
-pub struct HttpResponse {
-    pub status_code: u16,
     pub headers: Vec<HeaderField>,
     #[serde(with = "serde_bytes")]
     pub body: Vec<u8>,
@@ -94,26 +92,46 @@ fn get_path(url: &str) -> Option<&str> {
 }
 
 #[ic_cdk::query]
-fn http_request(request: HttpRequest) -> HttpResponse {
+fn http_request(request: HttpRequest) -> HttpResponse<'static> {
     //TODO add /canister_id/ as endpoint when ICQC is available.
     let path = get_path(request.url.as_str()).unwrap_or("/");
-    if let Some((content_type, bytes)) = retrieve(path) {
-        HttpResponse {
-            status_code: 200,
-            headers: vec![
-                HeaderField("Content-Type".to_string(), content_type.to_string()),
-                HeaderField("Content-Length".to_string(), format!("{}", bytes.len())),
-                HeaderField("Cache-Control".to_string(), format!("max-age={}", 600)),
-            ],
-            body: bytes.to_vec(),
-        }
+    let mut response = if let Some((content_type, bytes)) = retrieve(path) {
+        HttpResponse::builder()
+            .with_status_code(200)
+            .with_headers(vec![
+                ("Content-Type".to_string(), content_type.to_string()),
+                ("Content-Length".to_string(), format!("{}", bytes.len())),
+                ("Cache-Control".to_string(), format!("max-age={}", 600)),
+                (
+                    "Cross-Origin-Embedder-Policy".to_string(),
+                    "require-corp".to_string(),
+                ),
+                (
+                    "Cross-Origin-Resource-Policy".to_string(),
+                    "cross-origin".to_string(),
+                ),
+            ])
+            .with_body(bytes)
+            .build()
     } else {
-        HttpResponse {
-            status_code: 404,
-            headers: Vec::new(),
-            body: path.as_bytes().to_vec(),
-        }
-    }
+        HttpResponse::builder()
+            .with_status_code(404)
+            .with_headers(Vec::new())
+            .with_body(path.as_bytes().to_vec())
+            .build()
+    };
+    add_skip_certification_header(data_certificate().unwrap(), &mut response);
+    response
+}
+
+#[init]
+fn init() {
+    set_certified_data(&skip_certification_certified_data());
+}
+
+#[post_upgrade]
+fn post_upgrade() {
+    init();
 }
 
 ic_cdk::export_candid!();

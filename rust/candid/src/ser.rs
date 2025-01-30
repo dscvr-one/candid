@@ -7,7 +7,7 @@ use super::types::value::IDLValue;
 use super::types::{internal::Opcode, Field, Type, TypeEnv, TypeInner};
 use byteorder::{LittleEndian, WriteBytesExt};
 use leb128::write::{signed as sleb128_encode, unsigned as leb128_encode};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, TryReserveError};
 use std::io;
 use std::vec::Vec;
 
@@ -71,6 +71,14 @@ impl IDLBuilder {
         self.serialize(&mut vec)?;
         Ok(vec)
     }
+    /// If serializing a large amount of data, you can try to reserve the capacity of the
+    /// value serializer ahead of time to avoid reallocation.
+    pub fn try_reserve_value_serializer_capacity(
+        &mut self,
+        additional: usize,
+    ) -> std::result::Result<(), TryReserveError> {
+        self.value_ser.try_reserve(additional)
+    }
 }
 
 /// A structure for serializing Rust values to IDL.
@@ -98,6 +106,10 @@ impl ValueSerializer {
         use std::io::Write;
         self.value.write_all(bytes)?;
         Ok(())
+    }
+    #[doc(hidden)]
+    pub fn try_reserve(&mut self, additional: usize) -> std::result::Result<(), TryReserveError> {
+        self.value.try_reserve(additional)
     }
 }
 
@@ -147,9 +159,9 @@ impl<'a> types::Serializer for &'a mut ValueSerializer {
     serialize_num!(float64, f64, write_f64::<LittleEndian>);
 
     fn serialize_text(self, v: &str) -> Result<()> {
-        let mut buf = Vec::from(v.as_bytes());
+        let buf = v.as_bytes();
         self.write_leb128(buf.len() as u64)?;
-        self.value.append(&mut buf);
+        self.value.extend_from_slice(buf);
         Ok(())
     }
     fn serialize_null(self, _v: ()) -> Result<()> {
@@ -169,9 +181,9 @@ impl<'a> types::Serializer for &'a mut ValueSerializer {
         self.serialize_principal(blob)?;
         self.serialize_text(meth)
     }
-    fn serialize_option<T: ?Sized>(self, v: Option<&T>) -> Result<()>
+    fn serialize_option<T>(self, v: Option<&T>) -> Result<()>
     where
-        T: super::CandidType,
+        T: super::CandidType + ?Sized,
     {
         match v {
             None => {
@@ -205,11 +217,11 @@ impl<'a> types::Serializer for &'a mut ValueSerializer {
 pub struct Compound<'a> {
     ser: &'a mut ValueSerializer,
 }
-impl<'a> types::Compound for Compound<'a> {
+impl types::Compound for Compound<'_> {
     type Error = Error;
-    fn serialize_element<T: ?Sized>(&mut self, value: &T) -> Result<()>
+    fn serialize_element<T>(&mut self, value: &T) -> Result<()>
     where
-        T: types::CandidType,
+        T: types::CandidType + ?Sized,
     {
         value.idl_serialize(&mut *self.ser)?;
         Ok(())
@@ -316,9 +328,9 @@ impl TypeSerialize {
                 sleb128_encode(&mut buf, Opcode::Service as i64)?;
                 leb128_encode(&mut buf, ms.len() as u64)?;
                 for (id, ty) in ms {
-                    let mut name = Vec::from(id.as_bytes());
+                    let name = id.as_bytes();
                     leb128_encode(&mut buf, name.len() as u64)?;
-                    buf.append(&mut name);
+                    buf.extend_from_slice(name);
                     self.encode(&mut buf, ty)?;
                 }
             }

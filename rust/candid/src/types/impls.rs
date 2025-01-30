@@ -166,6 +166,19 @@ impl CandidType for serde_bytes::Bytes {
         serializer.serialize_blob(self)
     }
 }
+#[cfg_attr(docsrs, doc(cfg(feature = "serde_bytes")))]
+#[cfg(feature = "serde_bytes")]
+impl<const N: usize> CandidType for serde_bytes::ByteArray<N> {
+    fn _ty() -> Type {
+        TypeInner::Vec(TypeInner::Nat8.into()).into()
+    }
+    fn idl_serialize<S>(&self, serializer: S) -> Result<(), S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_blob(self.as_slice())
+    }
+}
 
 macro_rules! map_impl {
     ($ty:ident < K $(: $kbound1:ident $(+ $kbound2:ident)*)*, V $(, $typaram:ident : $bound:ident)* >) => {
@@ -318,7 +331,7 @@ where
     }
 }
 
-impl<'a, T> CandidType for &'a T
+impl<T> CandidType for &T
 where
     T: ?Sized + CandidType,
 {
@@ -335,7 +348,7 @@ where
         (**self).idl_serialize(serializer)
     }
 }
-impl<'a, T> CandidType for &'a mut T
+impl<T> CandidType for &mut T
 where
     T: ?Sized + CandidType,
 {
@@ -353,7 +366,7 @@ where
     }
 }
 
-impl<'a, T> CandidType for std::borrow::Cow<'a, T>
+impl<T> CandidType for std::borrow::Cow<'_, T>
 where
     T: ?Sized + CandidType + ToOwned,
 {
@@ -429,6 +442,22 @@ where
         S: Serializer,
     {
         self.as_ref().idl_serialize(serializer)
+    }
+}
+
+impl<T> CandidType for std::marker::PhantomData<T>
+where
+    T: CandidType,
+{
+    fn _ty() -> Type {
+        T::ty()
+    }
+    fn idl_serialize<S>(&self, _: S) -> Result<(), S::Error>
+    where
+        S: Serializer,
+    {
+        use serde::ser::Error;
+        Err(S::Error::custom("`PhantomData` cannot be serialized"))
     }
 }
 

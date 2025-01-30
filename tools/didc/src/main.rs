@@ -1,15 +1,18 @@
 use anyhow::{bail, Result};
 use candid_parser::candid::types::{subtype, Type};
 use candid_parser::{
+    configs::Configs,
     parse_idl_args, parse_idl_value, pretty_check_file, pretty_parse, pretty_wrap,
     types::{IDLType, IDLTypes},
     typing::ast_to_type,
     Error, IDLArgs, IDLValue, TypeEnv,
 };
 use clap::Parser;
+use console::style;
 use std::collections::HashSet;
 use std::io;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 #[derive(Parser)]
 #[clap(version, author)]
@@ -28,9 +31,15 @@ enum Command {
     Bind {
         /// Specifies did file for code generation
         input: PathBuf,
-        #[clap(short, long, value_parser = ["js", "ts", "did", "mo", "rs", "rs-agent"])]
+        #[clap(short, long, value_parser = ["js", "ts", "did", "mo", "rs", "rs-agent", "rs-stub"])]
         /// Specifies target language
         target: String,
+        #[clap(short, long)]
+        /// Specifies binding generation config in TOML syntax
+        config: Option<String>,
+        #[clap(short, long, num_args = 1.., value_delimiter = ',')]
+        /// Specifies a subset of methods to generate bindings. Allowed format: "-m foo,bar", "-m foo bar", "-m foo -m bar"
+        methods: Vec<String>,
     },
     /// Generate test suites for different languages
     Test {
@@ -74,12 +83,9 @@ enum Command {
     Random {
         #[clap(flatten)]
         annotate: TypeAnnotation,
-        #[clap(short, long, conflicts_with("file"))]
-        /// Specifies random value generation config in Dhall syntax
-        config: Option<String>,
         #[clap(short, long)]
-        /// Load random value generation config from file
-        file: Option<String>,
+        /// Specifies random value generation config in TOML syntax
+        config: Option<String>,
         #[clap(short, long, value_parser = ["did", "js"], default_value = "did")]
         /// Specifies target language
         lang: String,
@@ -157,6 +163,22 @@ fn parse_args(str: &str) -> Result<IDLArgs, Error> {
 fn parse_types(str: &str) -> Result<IDLTypes, Error> {
     pretty_parse("type annotations", str)
 }
+fn load_config(input: &Option<String>) -> Result<Configs, Error> {
+    match input {
+        None => Configs::from_str(""),
+        Some(str) if str.ends_with(".toml") => Configs::from_str(&std::fs::read_to_string(str)?),
+        Some(str) => Configs::from_str(str),
+    }
+}
+fn warn_unused(unused: &[String]) {
+    for e in unused {
+        eprintln!(
+            "{} path {} is unused.",
+            style("WARNING:").red().bold(),
+            style(e).green(),
+        );
+    }
+}
 
 fn main() -> Result<()> {
     match Command::parse() {
@@ -194,21 +216,48 @@ fn main() -> Result<()> {
             let ty2 = ast_to_type(&env, &ty2)?;
             subtype::subtype(&mut HashSet::new(), &env, &ty1, &ty2)?;
         }
-        Command::Bind { input, target } => {
-            let (env, actor) = pretty_check_file(&input)?;
+        Command::Bind {
+            input,
+            target,
+            config,
+            methods,
+        } => {
+            let configs = load_config(&config)?;
+            let (env, mut actor) = pretty_check_file(&input)?;
+            if !methods.is_empty() {
+                actor = Some(candid_parser::bindings::analysis::project_methods(
+                    &env, &actor, methods,
+                )?);
+            }
             let content = match target.as_str() {
                 "js" => candid_parser::bindings::javascript::compile(&env, &actor),
                 "ts" => candid_parser::bindings::typescript::compile(&env, &actor),
                 "did" => candid_parser::pretty::candid::compile(&env, &actor),
                 "mo" => candid_parser::bindings::motoko::compile(&env, &actor),
                 "rs" => {
-                    let config = candid_parser::bindings::rust::Config::new();
-                    candid_parser::bindings::rust::compile(&config, &env, &actor)
+                    use candid_parser::bindings::rust::{compile, Config, ExternalConfig};
+                    let external = configs
+                        .get_subtable(&["didc".to_string(), "rust".to_string()])
+                        .map(|x| x.clone().try_into().unwrap())
+                        .unwrap_or(ExternalConfig::default());
+                    let config = Config::new(configs);
+                    let (res, unused) = compile(&config, &env, &actor, external);
+                    warn_unused(&unused);
+                    res
                 }
-                "rs-agent" => {
-                    let mut config = candid_parser::bindings::rust::Config::new();
-                    config.set_target(candid_parser::bindings::rust::Target::Agent);
-                    candid_parser::bindings::rust::compile(&config, &env, &actor)
+                "rs-agent" | "rs-stub" => {
+                    use candid_parser::bindings::rust::{compile, Config, ExternalConfig};
+                    let config = Config::new(configs);
+                    let mut external = ExternalConfig::default();
+                    let target = match target.as_str() {
+                        "rs-agent" => "agent",
+                        "rs-stub" => "stub",
+                        _ => unreachable!(),
+                    };
+                    external.0.insert("target".to_string(), target.to_string());
+                    let (res, unused) = compile(&config, &env, &actor, external);
+                    warn_unused(&unused);
+                    res
                 }
                 _ => unreachable!(),
             };
@@ -305,31 +354,16 @@ fn main() -> Result<()> {
             annotate,
             lang,
             config,
-            file,
             args,
         } => {
-            use candid_parser::configs::Configs;
+            use candid_parser::configs::{Scope, ScopePos};
             use rand::Rng;
             let (env, types) = if args.is_some() {
                 annotate.get_types(Mode::Decode)?
             } else {
                 annotate.get_types(Mode::Encode)?
             };
-            let config = match (config, file) {
-                (None, None) => Configs::from_dhall("{=}")?,
-                (Some(str), None) => Configs::from_dhall(&str)?,
-                (None, Some(file)) => {
-                    let content = std::fs::read_to_string(&file)
-                        .map_err(|_| Error::msg(format!("could not read {file}")))?;
-                    Configs::from_dhall(&content)?
-                }
-                _ => unreachable!(),
-            };
-            let config = if let Some(ref method) = annotate.method {
-                config.with_method(method)
-            } else {
-                config
-            };
+            let config = load_config(&config)?;
             // TODO figure out how many bytes of entropy we need
             let seed: Vec<u8> = if let Some(ref args) = args {
                 let (env, types) = annotate.get_types(Mode::Encode)?;
@@ -339,7 +373,15 @@ fn main() -> Result<()> {
                 let mut rng = rand::thread_rng();
                 (0..2048).map(|_| rng.gen::<u8>()).collect()
             };
-            let args = candid_parser::random::any(&seed, &config, &env, &types)?;
+            let scope = annotate.method.as_ref().map(|method| {
+                let position = Some(if args.is_some() {
+                    ScopePos::Ret
+                } else {
+                    ScopePos::Arg
+                });
+                Scope { position, method }
+            });
+            let args = candid_parser::random::any(&seed, config, &env, &types, &scope)?;
             match lang.as_str() {
                 "did" => println!("{args}"),
                 "js" => println!(
