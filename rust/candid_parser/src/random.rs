@@ -1,4 +1,4 @@
-use super::configs::{path_name, Configs};
+use super::configs::{ConfigState, Configs, Context, Scope, State, StateElem};
 use crate::{Error, Result};
 use arbitrary::{unstructured::Int, Arbitrary, Unstructured};
 use candid::types::value::{IDLArgs, IDLField, IDLValue, VariantValue};
@@ -30,124 +30,166 @@ impl Default for GenConfig {
         }
     }
 }
-impl GenConfig {
-    pub fn update(&self, config: GenConfig, recursive: bool) -> GenConfig {
-        // TODO support removing properties
-        let old = self.clone();
-        GenConfig {
-            range: config.range.or(old.range),
-            text: config.text.or(old.text),
-            value: config.value.or(old.value),
-            width: config.width.or(old.width),
-            // These properties only update when it's not inside a recursion.
-            depth: if recursive { None } else { config.depth },
-            size: if recursive { None } else { config.size },
+impl ConfigState for GenConfig {
+    fn merge_config(&mut self, config: &Self, ctx: Option<Context>) -> Vec<String> {
+        let mut res = Vec::new();
+        if config.range.is_some() {
+            self.range = config.range;
+            res.push("range");
         }
+        if config.text.is_some() {
+            self.text.clone_from(&config.text);
+            res.push("text");
+        }
+        if config.width.is_some() {
+            self.width = config.width;
+            res.push("width");
+        }
+        if config.value.is_some() {
+            self.value.clone_from(&config.value);
+            res.push("value");
+        }
+        if ctx.as_ref().is_some_and(|c| !c.is_recursive) {
+            if config.depth.is_some() {
+                self.depth = config.depth;
+                res.push("depth");
+            }
+            if config.size.is_some() {
+                self.size = config.size;
+                res.push("size");
+            }
+        }
+        res.into_iter().map(|s| s.to_string()).collect()
+    }
+    fn update_state(&mut self, elem: &StateElem) {
+        if let StateElem::Type(t) = elem {
+            if !matches!(t.as_ref(), TypeInner::Var(_)) {
+                self.depth = self.depth.map(|d| d - 1);
+                self.size = self.size.map(|s| s - 1);
+            }
+        }
+    }
+    fn restore_state(&mut self, elem: &StateElem) {
+        if let StateElem::Type(t) = elem {
+            if !matches!(t.as_ref(), TypeInner::Var(_)) {
+                self.depth = self.depth.map(|d| d + 1);
+            }
+        }
+    }
+    fn unmatched_config() -> Self {
+        GenConfig {
+            range: None,
+            text: None,
+            width: None,
+            value: None,
+            depth: None,
+            size: None,
+        }
+    }
+    fn list_properties(&self) -> Vec<String> {
+        let mut res = Vec::new();
+        if self.range.is_some() {
+            res.push("range".to_string());
+        }
+        if self.text.is_some() {
+            res.push("text".to_string());
+        }
+        if self.width.is_some() {
+            res.push("width".to_string());
+        }
+        if self.value.is_some() {
+            res.push("value".to_string());
+        }
+        if self.depth.is_some() {
+            res.push("depth".to_string());
+        }
+        if self.size.is_some() {
+            res.push("size".to_string());
+        }
+        res
     }
 }
 
-pub struct GenState<'a> {
-    tree: &'a Configs,
-    env: &'a TypeEnv,
-    // state
-    path: Vec<String>,
-    config: GenConfig,
-    depth: isize,
-    size: isize,
-}
-impl<'a> GenState<'a> {
-    fn new(tree: &'a Configs, env: &'a TypeEnv) -> Self {
-        let mut config = GenConfig::default();
-        if let Some((global_config, _)) = tree.get::<GenConfig>(&[]) {
-            config = config.update(global_config, false);
-        }
-        GenState {
-            depth: config.depth.take().unwrap_or(5),
-            size: config.size.take().unwrap_or(50),
-            tree,
-            config,
-            env,
-            path: Vec::new(),
-        }
-    }
-    // Update state and return the old config state. Label and var type are cost free.
-    fn push_state(&mut self, ty: &Type, label: Option<String>) -> GenConfig {
-        let elem = if let Some(lab) = label {
-            lab
-        } else {
-            match ty.as_ref() {
-                TypeInner::Var(_) => (),
-                _ => {
-                    self.depth -= 1;
-                    self.size -= 1;
-                }
-            }
-            path_name(ty)
-        };
-        let mut old_config = self.config.clone();
-        self.path.push(elem);
-        if let Some((config, recursive)) = self.tree.get::<GenConfig>(&self.path) {
-            self.config = self.config.update(config, recursive);
-        }
-        // Current depth and size are stored in old_config for pop_state to restore states.
-        old_config.depth = Some(self.depth);
-        old_config.size = Some(self.size);
-        self.depth = self.config.depth.take().unwrap_or(self.depth);
-        self.size = self.config.size.take().unwrap_or(self.size);
-        old_config
-    }
-    fn pop_state(&mut self, old_config: GenConfig, ty: &Type, is_label: bool) {
-        if !is_label {
-            match ty.as_ref() {
-                TypeInner::Var(_) => (),
-                _ => {
-                    self.depth += 1;
-                }
-            }
-        }
-        self.path.pop();
-        self.config = old_config;
-        self.depth = self.config.depth.take().unwrap();
-        self.size = self.config.size.take().unwrap();
-    }
+pub struct RandState<'a>(State<'a, GenConfig>);
+impl RandState<'_> {
     pub fn any(&mut self, u: &mut Unstructured, ty: &Type) -> Result<IDLValue> {
-        let old_config = self.push_state(ty, None);
-        assert!(self.config.depth.is_none());
-        if let Some(vec) = &self.config.value {
+        let old_config = self.0.push_state(&StateElem::Type(ty));
+        if let Some(vec) = &self.0.config.value {
             let v = u.choose(vec)?;
             let v: IDLValue = super::parse_idl_value(v)?;
-            let v = v.annotate_type(true, self.env, ty)?;
-            self.pop_state(old_config, ty, false);
+            let v = v.annotate_type(true, self.0.env, ty)?;
+            self.0.pop_state(old_config, StateElem::Type(ty));
+            self.0.update_stats("value");
             return Ok(v);
         }
         let res = Ok(match ty.as_ref() {
             TypeInner::Var(id) => {
-                let ty = self.env.rec_find_type(id)?;
+                let ty = self.0.env.rec_find_type(id)?;
                 self.any(u, ty)?
             }
             TypeInner::Null => IDLValue::Null,
             TypeInner::Reserved => IDLValue::Reserved,
             TypeInner::Bool => IDLValue::Bool(u.arbitrary()?),
-            TypeInner::Int => IDLValue::Int(arbitrary_num::<i128>(u, self.config.range)?.into()),
-            TypeInner::Nat => IDLValue::Nat(arbitrary_num::<u128>(u, self.config.range)?.into()),
-            TypeInner::Nat8 => IDLValue::Nat8(arbitrary_num(u, self.config.range)?),
-            TypeInner::Nat16 => IDLValue::Nat16(arbitrary_num(u, self.config.range)?),
-            TypeInner::Nat32 => IDLValue::Nat32(arbitrary_num(u, self.config.range)?),
-            TypeInner::Nat64 => IDLValue::Nat64(arbitrary_num(u, self.config.range)?),
-            TypeInner::Int8 => IDLValue::Int8(arbitrary_num(u, self.config.range)?),
-            TypeInner::Int16 => IDLValue::Int16(arbitrary_num(u, self.config.range)?),
-            TypeInner::Int32 => IDLValue::Int32(arbitrary_num(u, self.config.range)?),
-            TypeInner::Int64 => IDLValue::Int64(arbitrary_num(u, self.config.range)?),
+            TypeInner::Int => {
+                self.0.update_stats("range");
+                IDLValue::Int(arbitrary_num::<i128>(u, self.0.config.range)?.into())
+            }
+            TypeInner::Nat => {
+                self.0.update_stats("range");
+                IDLValue::Nat(arbitrary_num::<u128>(u, self.0.config.range)?.into())
+            }
+            TypeInner::Nat8 => {
+                self.0.update_stats("range");
+                IDLValue::Nat8(arbitrary_num(u, self.0.config.range)?)
+            }
+            TypeInner::Nat16 => {
+                self.0.update_stats("range");
+                IDLValue::Nat16(arbitrary_num(u, self.0.config.range)?)
+            }
+            TypeInner::Nat32 => {
+                self.0.update_stats("range");
+                IDLValue::Nat32(arbitrary_num(u, self.0.config.range)?)
+            }
+            TypeInner::Nat64 => {
+                self.0.update_stats("range");
+                IDLValue::Nat64(arbitrary_num(u, self.0.config.range)?)
+            }
+            TypeInner::Int8 => {
+                self.0.update_stats("range");
+                IDLValue::Int8(arbitrary_num(u, self.0.config.range)?)
+            }
+            TypeInner::Int16 => {
+                self.0.update_stats("range");
+                IDLValue::Int16(arbitrary_num(u, self.0.config.range)?)
+            }
+            TypeInner::Int32 => {
+                self.0.update_stats("range");
+                IDLValue::Int32(arbitrary_num(u, self.0.config.range)?)
+            }
+            TypeInner::Int64 => {
+                self.0.update_stats("range");
+                IDLValue::Int64(arbitrary_num(u, self.0.config.range)?)
+            }
             TypeInner::Float32 => IDLValue::Float32(u.arbitrary()?),
             TypeInner::Float64 => IDLValue::Float64(u.arbitrary()?),
             TypeInner::Text => {
-                IDLValue::Text(arbitrary_text(u, &self.config.text, &self.config.width)?)
+                self.0.update_stats("text");
+                self.0.update_stats("width");
+                IDLValue::Text(arbitrary_text(
+                    u,
+                    &self.0.config.text,
+                    &self.0.config.width,
+                )?)
             }
             TypeInner::Opt(t) => {
-                let depths = if self.depth <= 0 || self.size <= 0 {
+                self.0.update_stats("depth");
+                self.0.update_stats("size");
+                let depths = if self.0.config.depth.is_some_and(|d| d <= 0)
+                    || self.0.config.size.is_some_and(|s| s <= 0)
+                {
                     [1, 0]
                 } else {
-                    [1, size(self.env, t).unwrap_or(MAX_DEPTH)]
+                    [1, size(self.0.env, t).unwrap_or(MAX_DEPTH)]
                 };
                 let idx = arbitrary_variant(u, &depths)?;
                 if idx == 0 {
@@ -157,9 +199,11 @@ impl<'a> GenState<'a> {
                 }
             }
             TypeInner::Vec(t) => {
-                let width = self.config.width.or_else(|| {
-                    let elem_size = size(self.env, t).unwrap_or(MAX_DEPTH);
-                    Some(std::cmp::max(0, self.size) as usize / elem_size)
+                self.0.update_stats("width");
+                let width = self.0.config.width.or_else(|| {
+                    let elem_size = size(self.0.env, t).unwrap_or(MAX_DEPTH);
+                    self.0.update_stats("size");
+                    Some(std::cmp::max(0, self.0.config.size.unwrap_or(0)) as usize / elem_size)
                 });
                 let len = arbitrary_len(u, width)?;
                 let mut vec = Vec::with_capacity(len);
@@ -172,9 +216,11 @@ impl<'a> GenState<'a> {
             TypeInner::Record(fs) => {
                 let mut res = Vec::new();
                 for Field { id, ty } in fs.iter() {
-                    let old_config = self.push_state(ty, Some(id.to_string()));
+                    let lab_str = id.to_string();
+                    let elem = StateElem::Label(&lab_str);
+                    let old_config = self.0.push_state(&elem);
                     let val = self.any(u, ty)?;
-                    self.pop_state(old_config, ty, true);
+                    self.0.pop_state(old_config, elem);
                     res.push(IDLField {
                         id: id.as_ref().clone(),
                         val,
@@ -185,8 +231,12 @@ impl<'a> GenState<'a> {
             TypeInner::Variant(fs) => {
                 let choices = fs
                     .iter()
-                    .map(|Field { ty, .. }| size(self.env, ty).unwrap_or(MAX_DEPTH));
-                let sizes: Vec<_> = if self.depth <= 0 || self.size <= 0 {
+                    .map(|Field { ty, .. }| size(self.0.env, ty).unwrap_or(MAX_DEPTH));
+                self.0.update_stats("size");
+                self.0.update_stats("depth");
+                let sizes: Vec<_> = if self.0.config.depth.is_some_and(|d| d <= 0)
+                    || self.0.config.size.is_some_and(|s| s <= 0)
+                {
                     let min = choices.clone().min().unwrap_or(0);
                     choices.map(|d| if d > min { 0 } else { d }).collect()
                 } else {
@@ -194,9 +244,11 @@ impl<'a> GenState<'a> {
                 };
                 let idx = arbitrary_variant(u, &sizes)?;
                 let Field { id, ty } = &fs[idx];
-                let old_config = self.push_state(ty, Some(id.to_string()));
+                let lab_str = id.to_string();
+                let elem = StateElem::Label(&lab_str);
+                let old_config = self.0.push_state(&elem);
                 let val = self.any(u, ty)?;
-                self.pop_state(old_config, ty, true);
+                self.0.pop_state(old_config, elem);
                 let field = IDLField {
                     id: id.as_ref().clone(),
                     val,
@@ -204,24 +256,37 @@ impl<'a> GenState<'a> {
                 IDLValue::Variant(VariantValue(Box::new(field), idx as u64))
             }
             TypeInner::Principal => IDLValue::Principal(crate::Principal::arbitrary(u)?),
-            TypeInner::Func(_) => IDLValue::Func(
-                crate::Principal::arbitrary(u)?,
-                arbitrary_text(u, &self.config.text, &self.config.width)?,
-            ),
+            TypeInner::Func(_) => {
+                self.0.update_stats("text");
+                self.0.update_stats("width");
+                IDLValue::Func(
+                    crate::Principal::arbitrary(u)?,
+                    arbitrary_text(u, &self.0.config.text, &self.0.config.width)?,
+                )
+            }
             TypeInner::Service(_) => IDLValue::Service(crate::Principal::arbitrary(u)?),
             _ => unimplemented!(),
         });
-        self.pop_state(old_config, ty, false);
+        self.0.pop_state(old_config, StateElem::Type(ty));
         res
     }
 }
 
-pub fn any(seed: &[u8], tree: &Configs, env: &TypeEnv, types: &[Type]) -> Result<IDLArgs> {
+pub fn any(
+    seed: &[u8],
+    configs: Configs,
+    env: &TypeEnv,
+    types: &[Type],
+    scope: &Option<Scope>,
+) -> Result<IDLArgs> {
     let mut u = arbitrary::Unstructured::new(seed);
+    let tree = super::configs::ConfigTree::from_configs("random", configs)?;
     let mut args = Vec::new();
     for (i, t) in types.iter().enumerate() {
-        let tree = tree.with_method(&i.to_string());
-        let mut state = GenState::new(&tree, env);
+        let mut state = State::new(&tree, env);
+        state.with_scope(scope, i);
+        let mut state = RandState(state);
+        state.0.push_state(&StateElem::Label(&i.to_string()));
         let v = state.any(&mut u, t)?;
         args.push(v);
     }
